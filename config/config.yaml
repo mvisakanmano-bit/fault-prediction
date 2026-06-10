@@ -1,0 +1,170 @@
+# =============================================================================
+# Fault Prediction Pipeline Configuration
+# All hyperparameters, paths, and thresholds centralized here.
+# Units and valid ranges documented inline.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# General
+# ---------------------------------------------------------------------------
+general:
+  random_seed: 42                # Reproducibility seed for all RNGs
+  log_level: "INFO"              # DEBUG | INFO | WARNING | ERROR
+  project_root: "."              # Resolved relative to this file's location
+
+# ---------------------------------------------------------------------------
+# Paths (relative to project root)
+# ---------------------------------------------------------------------------
+paths:
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  synthetic_data: "data/synthetic"
+  models_out: "outputs/models"
+  reports_out: "outputs/reports"
+  plots_out: "outputs/plots"
+
+# ---------------------------------------------------------------------------
+# Dataset Generation
+# ---------------------------------------------------------------------------
+data_generation:
+  sample_rate: 1000              # Hz — samples per second (1 kHz)
+  samples_per_class: 50000       # Minimum samples per fault class
+  num_classes: 7                 # 0=Normal,1=SLG,2=LL,3=3PH,4=Overload,5=Sag,6=Harmonic
+  pre_fault_ms: 500              # ms of normal operation before fault onset
+  post_fault_ms: 200             # ms of sustained fault signal
+  train_ratio: 0.70              # Fraction for training
+  val_ratio: 0.15                # Fraction for validation
+  test_ratio: 0.15               # Fraction for testing
+
+  # Nominal signal ranges
+  voltage_nominal: 220.0         # V — nominal phase voltage
+  voltage_normal_min: 215.0      # V
+  voltage_normal_max: 225.0      # V
+  current_normal_min: 0.0        # A
+  current_normal_max: 100.0      # A
+  frequency_nominal: 50.0        # Hz
+  frequency_normal_min: 49.8     # Hz
+  frequency_normal_max: 50.2     # Hz
+  power_factor_min: 0.85         # dimensionless
+  power_factor_max: 1.0
+  thd_normal_max: 5.0            # % — total harmonic distortion in normal operation
+  neutral_current_max: 2.0       # A — normal neutral current limit
+
+  noise_std_pct: 0.5             # % of nominal — Gaussian noise standard deviation
+
+  # Fault severity parameters
+  slg_voltage_drop_min: 0.30     # fraction — SLG faulted phase voltage drop
+  slg_voltage_drop_max: 0.60
+  slg_current_spike_min: 2.0     # multiplier — faulted phase current spike
+  slg_current_spike_max: 4.0
+  ll_voltage_drop_min: 0.20      # fraction — Line-to-Line voltage dip
+  ll_voltage_drop_max: 0.40
+  three_phase_voltage_drop: 0.80 # fraction — 3-phase fault voltage collapse
+  three_phase_current_spike_min: 5.0
+  three_phase_current_spike_max: 10.0
+  overload_current_rise_min: 1.2  # multiplier start
+  overload_current_rise_max: 2.0  # multiplier end
+  sag_voltage_drop_min: 0.10     # fraction
+  sag_voltage_drop_max: 0.30
+  sag_duration_min_ms: 100       # ms
+  sag_duration_max_ms: 2000      # ms
+  harmonic_thd_threshold: 8.0    # % — THD above this signals harmonic fault
+
+# ---------------------------------------------------------------------------
+# Preprocessing
+# ---------------------------------------------------------------------------
+preprocessing:
+  missing_fill_max_samples: 5    # Forward-fill gaps <= this many samples
+  outlier_iqr_multiplier: 3.0    # IQR multiplier for clipping [Q1-k*IQR, Q3+k*IQR]
+  window_size: 256               # Samples per sliding window
+  stride: 64                     # Samples between consecutive windows (75% overlap)
+  scaler: "RobustScaler"         # RobustScaler | StandardScaler | MinMaxScaler
+
+# ---------------------------------------------------------------------------
+# Feature Engineering
+# ---------------------------------------------------------------------------
+features:
+  fundamental_freq: 50.0         # Hz — power system fundamental
+  harmonics: [2, 3, 5, 7]        # Harmonic orders to extract from FFT
+  fft_window: "hann"             # FFT window function: hann | hamming | blackman
+  target_feature_count_min: 80   # Validation gate: minimum expected features
+  target_feature_count_max: 220  # Validation gate: maximum expected features (actual ~177)
+
+# ---------------------------------------------------------------------------
+# Model Hyperparameters
+# ---------------------------------------------------------------------------
+models:
+  random_forest:
+    n_estimators_options: [200, 500, 1000]
+    max_depth_options: [null, 10, 20, 30]   # null = unlimited
+    min_samples_split_options: [2, 5, 10]
+    max_features_options: ["sqrt", "log2"]
+    class_weight: "balanced"
+    n_jobs: -1
+    random_search_iter: 20       # Number of RandomizedSearchCV iterations
+    cv_folds: 3                  # Inner CV for hyperparameter search
+    calibration_method: "isotonic"
+
+  xgboost:
+    n_estimators_options: [300, 700, 1000]
+    max_depth_options: [4, 6, 8]
+    learning_rate_options: [0.01, 0.05, 0.1]
+    subsample_options: [0.7, 0.8, 1.0]
+    colsample_bytree_options: [0.7, 0.8, 1.0]
+    early_stopping_rounds: 50
+    eval_metric: "mlogloss"
+    random_search_iter: 20
+    cv_folds: 3
+
+  neural_network:
+    # Architecture
+    conv_channels: [64, 128, 256]
+    kernel_sizes: [7, 5, 3]
+    fc_units: [128, 64]
+    dropout_rates: [0.4, 0.3]
+    # Training
+    learning_rate: 0.001
+    weight_decay: 0.0001
+    batch_size: 256
+    epochs: 100
+    early_stopping_patience: 15
+    grad_clip_max_norm: 1.0
+    scheduler: "CosineAnnealingLR"
+    scheduler_t_max: 50
+    mixed_precision: true        # Use torch.cuda.amp if available
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+training:
+  cv_folds: 5                    # Stratified k-fold outer CV
+  random_seed: 42
+
+# ---------------------------------------------------------------------------
+# Evaluation Thresholds (Safety-critical)
+# ---------------------------------------------------------------------------
+evaluation:
+  min_fault_detection_rate: 0.95  # FDR must exceed 95% per class (safety gate)
+  max_false_alarm_rate: 0.02      # FAR must be under 2% (nuisance trip gate)
+  dry_run_fdr_gate: 0.90          # Relaxed gate for --dry-run (1 CV fold)
+  dry_run_far_gate: 0.05
+  plot_dpi: 300                   # DPI for saved figures
+  report_format: "html"           # html | pdf
+
+# ---------------------------------------------------------------------------
+# Inference
+# ---------------------------------------------------------------------------
+inference:
+  default_model: "random_forest"  # Model used by default in RealTimePredictor
+  cpu_latency_target_ms_tree: 50  # Target latency for RF/XGBoost on CPU
+  cpu_latency_target_ms_nn: 100   # Target latency for NN on CPU
+  fault_prob_yellow_threshold: 0.20  # Probability above which gauge turns yellow
+  fault_prob_red_threshold: 0.60     # Probability above which gauge turns red
+  top_features_n: 5              # Number of top SHAP features to report per prediction
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+dashboard:
+  rolling_window_seconds: 5      # Seconds of signal history shown in live plots
+  streamlit_port: 8501
