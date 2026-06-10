@@ -18,3 +18,5 @@ htmlcov/
 *.pt
 *.pkl
 !requirements.txt
+.env
+.env.local
